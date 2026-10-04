@@ -52,6 +52,7 @@ pnpm test        # app.test.ts needs Redis (DB 13; override with TEST_REDIS_URL)
 | `src/frames/` | Frames WebSockets: `/ws/frames/:sid` (browser, `sk_token`) and `/internal/frames/:sid` (meetbot), wire format, 2 fps cap |
 | `src/diff.ts` | pHash + 16×16 tile change map: drop, crop changed tiles, or send the full frame |
 | `src/vision/` | Claude vision: verbatim DESIGN prompt, structured-output schema, crop/scale, retry and escalation policy, offline fake |
+| `src/normalize.ts` | German/English amounts, dates and currencies → `InvoiceState`; canonical field values |
 | `src/usage.ts` | `usage` records priced from `PRICE_TABLE` |
 | `bench/` | Vision benchmark: exact digits and p50/p95 latency per model (`pnpm bench`, see `bench/README.md`) |
 | `src/directory.ts` | Session → org lookup (registry, then the `sessions` table) |
