@@ -1,4 +1,5 @@
-import { internalAuth, type Logger } from "@sidekik/contracts";
+import { ClipsRequestSchema, internalAuth, type Logger } from "@sidekik/contracts";
+import type { ClipsService } from "./clips.js";
 import websocket from "@fastify/websocket";
 import Fastify, { LogController, type FastifyBaseLogger, type FastifyInstance } from "fastify";
 import { MAX_FRAME_BYTES } from "./frames/protocol.js";
@@ -18,7 +19,7 @@ export type ServerDeps = {
   /** Serves the frames WebSockets when set. */
   frames?: FrameRouteDeps;
   /** Serves the internal HTTP routes when set. */
-  internal?: { token: string; store: PerceptionStore };
+  internal?: { token: string; store: PerceptionStore; clips?: ClipsService };
 };
 
 export function buildServer(deps: ServerDeps): FastifyInstance {
@@ -56,6 +57,22 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           if (!kf) return reply.code(404).send({ error: "unknown keyframe" });
           return { url: await internal.store.signedUrl(kf.storage_path, KEYFRAME_URL_TTL_S) };
         });
+
+        const clips = internal.clips;
+        if (clips) {
+          // POST /internal/clips (mapper): 202 {job_id}; the clips rows appear when the job is done.
+          scope.post("/clips", async (req, reply) => {
+            const parsed = ClipsRequestSchema.safeParse(req.body);
+            if (!parsed.success) return reply.code(400).send({ error: "invalid request", issues: parsed.error.issues });
+            const job = clips.submit(parsed.data);
+            return reply.code(202).send({ job_id: job.job_id });
+          });
+          // Job status, for callers that want to wait rather than poll the clips table.
+          scope.get<{ Params: { job_id: string } }>("/clips/:job_id", async (req, reply) => {
+            const job = clips.get(req.params.job_id);
+            return job ?? reply.code(404).send({ error: "unknown job" });
+          });
+        }
       },
       { prefix: "/internal" },
     );

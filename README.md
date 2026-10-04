@@ -33,6 +33,16 @@ It prints the `screen.events` and `ctx` lines perception publishes for the fixtu
 
 `t_ms` is session time. The server accepts at most 2 frames per second per session (by arrival, with 50 ms of jitter allowed) and drops the rest. Frames are dropped while the session is off the record, and the socket closes with code `4410` once the session has ended. `src/frames/protocol.ts` has `encodeFrame()` for senders.
 
+## Internal HTTP (X-Internal-Token)
+
+| Route | What |
+|---|---|
+| `POST /internal/clips` | `{session_id, items:[{step_id, t_ms, before_s?=6, after_s?=4}]}` → `202 {job_id}`. Writes `captures/org/{org}/sessions/{sid}/clips/{step_id}.mp4` and a `clips` row per item. |
+| `GET /internal/clips/:job_id` | Job status: `queued`, `running`, `done` or `failed`, per item with `clip_id`, `storage_path` or `error`. |
+| `GET /internal/keyframe-url?keyframe_id=` | `{url}` signed for 5 minutes. |
+
+Clips are time-aligned slideshows at 2 fps: each half second shows the latest keyframe at or before that moment. When the window holds fewer than 3 keyframes, the 3 nearest keyframes in the session share the clip equally. Jobs run one at a time.
+
 ## Test
 
 ```sh
@@ -69,6 +79,7 @@ TEST_SUPABASE_URL=http://localhost:54321 TEST_SUPABASE_SERVICE_ROLE_KEY=... pnpm
 | `src/ctx.ts` | `ctx` lines: at most one per 5 s, ≤ 400 chars, invoice values only |
 | `src/keyframes.ts` | 20 s raw-frame ring buffer (memory only) and keyframe selection: changes, first frame after navigation, ±5 s around an `ask` |
 | `src/redact-image.ts` | Presidio image redactor + blur of PII-labeled fields (the fallback when Presidio is down) |
+| `src/clips.ts` | `POST /internal/clips` job: 10 s MP4 slideshows from redacted keyframes, uploaded with a `clips` row |
 | `src/usage.ts` | `usage` records priced from `PRICE_TABLE` |
 | `bench/` | Vision benchmark: exact digits and p50/p95 latency per model (`pnpm bench`, see `bench/README.md`) |
 | `src/directory.ts` | Session → org lookup (registry, then the `sessions` table) |

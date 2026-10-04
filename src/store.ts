@@ -31,6 +31,17 @@ export type KeyframeRow = {
   redacted: boolean;
 };
 
+/** One `clips` row. */
+export type ClipRow = {
+  id: string;
+  org_id: string;
+  session_id: string;
+  step_id: string;
+  t_ms: number;
+  storage_path: string;
+  duration_s: number;
+};
+
 export const CAPTURES_BUCKET = "captures";
 
 /** Splits "captures/org/..." into bucket and object path. */
@@ -52,6 +63,10 @@ export interface PerceptionStore {
   signedUrl(path: string, ttlSec: number): Promise<string>;
   /** orgs.settings.store_learner_keyframes (SCHEMA 0001; default false). */
   storeLearnerKeyframes(orgId: string): Promise<boolean>;
+  /** A session's keyframes in time order. */
+  listKeyframes(sessionId: string): Promise<KeyframeRow[]>;
+  download(path: string): Promise<Buffer>;
+  insertClip(row: ClipRow): Promise<void>;
 }
 
 export class SupabaseStore implements PerceptionStore {
@@ -97,6 +112,28 @@ export class SupabaseStore implements PerceptionStore {
     return data.signedUrl;
   }
 
+  async listKeyframes(sessionId: string): Promise<KeyframeRow[]> {
+    const { data, error } = await this.db
+      .from("keyframes")
+      .select("id, org_id, session_id, t_ms, storage_path, phash, redacted")
+      .eq("session_id", sessionId)
+      .order("t_ms", { ascending: true });
+    if (error) throw new Error(`keyframes read failed: ${error.message}`);
+    return (data ?? []) as KeyframeRow[];
+  }
+
+  async download(path: string): Promise<Buffer> {
+    const { bucket, object } = splitStoragePath(path);
+    const { data, error } = await this.db.storage.from(bucket).download(object);
+    if (error || !data) throw new Error(`download ${path} failed: ${error?.message ?? "no data"}`);
+    return Buffer.from(await data.arrayBuffer());
+  }
+
+  async insertClip(row: ClipRow): Promise<void> {
+    const { error } = await this.db.from("clips").insert(row);
+    if (error) throw new Error(`clips insert failed: ${error.message}`);
+  }
+
   private readonly learnerKeyframes = new Map<string, boolean>();
 
   async storeLearnerKeyframes(orgId: string): Promise<boolean> {
@@ -113,6 +150,7 @@ export class SupabaseStore implements PerceptionStore {
 export class MemoryStore implements PerceptionStore {
   readonly screenEvents: ScreenEventRow[] = [];
   readonly keyframes: KeyframeRow[] = [];
+  readonly clips: ClipRow[] = [];
   readonly files = new Map<string, { bytes: Buffer; contentType: string }>();
   learnerKeyframes = false;
 
@@ -149,5 +187,19 @@ export class MemoryStore implements PerceptionStore {
 
   async storeLearnerKeyframes(): Promise<boolean> {
     return this.learnerKeyframes;
+  }
+
+  async listKeyframes(sessionId: string): Promise<KeyframeRow[]> {
+    return this.keyframes.filter((k) => k.session_id === sessionId).sort((a, b) => a.t_ms - b.t_ms);
+  }
+
+  async download(path: string): Promise<Buffer> {
+    const f = this.files.get(path);
+    if (!f) throw new Error(`download ${path} failed: not found`);
+    return f.bytes;
+  }
+
+  async insertClip(row: ClipRow): Promise<void> {
+    this.clips.push(row);
   }
 }

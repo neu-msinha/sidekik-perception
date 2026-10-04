@@ -26,6 +26,8 @@ export const PerceptionEnvSchema = BaseServiceEnvSchema.extend({
   PRESIDIO_ANONYMIZER_URL: optional.pipe(z.url().optional()),
   /** Presidio image redactor. Unset: keyframes fall back to blurring PII-labeled fields. */
   PRESIDIO_IMAGE_URL: optional.pipe(z.url().optional()),
+  /** ffmpeg binary for clips (the Docker image has it on PATH). */
+  FFMPEG_PATH: optional,
   /** Where perception's rows and files go: Supabase, or memory + log (dev:mock without a database). */
   PERSISTENCE: z.enum(["supabase", "memory"]).default("supabase"),
   /** Offline vision that reads nothing off the image (dev:mock without a key). Never in production. */

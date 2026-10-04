@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { createBus, createLogger, type Bus, type Logger } from "@sidekik/contracts";
 import type { FastifyInstance } from "fastify";
 import { Redis } from "ioredis";
+import { ClipsService } from "./clips.js";
 import { wireConsumers, type PerceptionHooks } from "./consumers.js";
 import { RegistryFirstDirectory } from "./directory.js";
 import type { PerceptionEnv } from "./env.js";
@@ -34,6 +35,7 @@ export type Perception = {
   bus: Bus;
   sessions: SessionRegistry;
   pipelines: PipelineManager;
+  clips: ClipsService;
   store: PerceptionStore;
   log: Logger;
   close(): Promise<void>;
@@ -98,12 +100,13 @@ export async function startPerception(env: PerceptionEnv, opts: StartOptions = {
     env.PERSISTENCE === "supabase" ? { url: env.SUPABASE_URL, serviceRoleKey: env.SUPABASE_SERVICE_ROLE_KEY } : undefined,
   );
   const sink: FrameSink = opts.sink ?? pipelines;
+  const clips = new ClipsService({ store, directory, log, ...(env.FFMPEG_PATH ? { ffmpeg: env.FFMPEG_PATH } : {}) });
   const app = buildServer({
     version: VERSION,
     logger: log,
     checks: { redis: async () => (await health.ping()) === "PONG" },
     frames: { sessions, directory, sink, sessionSecret: env.SK_SESSION_SECRET, internalToken: env.SK_INTERNAL_TOKEN, log },
-    internal: { token: env.SK_INTERNAL_TOKEN, store },
+    internal: { token: env.SK_INTERNAL_TOKEN, store, clips },
   });
 
   if (opts.listen ?? true) {
@@ -117,6 +120,7 @@ export async function startPerception(env: PerceptionEnv, opts: StartOptions = {
     bus,
     sessions,
     pipelines,
+    clips,
     store,
     log,
     async close() {
