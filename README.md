@@ -38,7 +38,17 @@ It prints the `screen.events` and `ctx` lines perception publishes for the fixtu
 ```sh
 pnpm typecheck
 pnpm test        # app.test.ts needs Redis (DB 13; override with TEST_REDIS_URL)
+# Live checks against the dev stack (skipped unless the URLs are set):
+TEST_SUPABASE_URL=http://localhost:54321 TEST_SUPABASE_SERVICE_ROLE_KEY=... pnpm test:live
 ```
+
+## Privacy
+
+- **Raw frames are never stored.** They live in a 20-second in-memory ring buffer per session, which is cleared on `offrecord_on` and at `ended`. Only redacted webp keyframes go to Storage.
+- **Keyframes** go through Presidio's image redactor (`PRESIDIO_IMAGE_URL`). Fields known to hold personal data (approver, contact, email, phone, IBAN, or values the vision model replaced with `<PERSON_1>`-style placeholders) are also blurred. If Presidio is missing or fails, the blur alone is applied and the row is stored with `keyframes.redacted = false`.
+- **Learner screens** (tutor sessions) are kept only when the org sets `orgs.settings.store_learner_keyframes`.
+- **Off the record:** frames are dropped at the socket and in the pipeline, the waiting frame and the ring buffer are cleared, in-flight vision results and unstored keyframes are thrown away, and `ctx` stops.
+- **Screen text** (`untrusted_screen_text`) is redacted with Presidio before it's published, and dropped if Presidio is unavailable. `ctx` lines carry invoice values only.
 
 ## Layout
 
@@ -57,6 +67,8 @@ pnpm test        # app.test.ts needs Redis (DB 13; override with TEST_REDIS_URL)
 | `src/pipeline.ts` | Per-session pipeline: frame → diff → vision (≤ 2 in flight, latest frame waits) → state → publish; settle timer |
 | `src/publisher.ts`, `src/store.ts` | `screen_events` rows + `sk:screen.events`, `ctx` commands, `usage`; screen text redacted with Presidio (fails closed) |
 | `src/ctx.ts` | `ctx` lines: at most one per 5 s, ≤ 400 chars, invoice values only |
+| `src/keyframes.ts` | 20 s raw-frame ring buffer (memory only) and keyframe selection: changes, first frame after navigation, ±5 s around an `ask` |
+| `src/redact-image.ts` | Presidio image redactor + blur of PII-labeled fields (the fallback when Presidio is down) |
 | `src/usage.ts` | `usage` records priced from `PRICE_TABLE` |
 | `bench/` | Vision benchmark: exact digits and p50/p95 latency per model (`pnpm bench`, see `bench/README.md`) |
 | `src/directory.ts` | Session → org lookup (registry, then the `sessions` table) |

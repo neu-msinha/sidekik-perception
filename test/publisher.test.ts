@@ -90,7 +90,7 @@ describe("Publisher", () => {
 
   it("keeps publishing when the database insert fails", async () => {
     const bus = new FakeBus();
-    const store = { insertScreenEvents: async () => Promise.reject(new Error("db down")) };
+    const store = Object.assign(new MemoryStore(), { insertScreenEvents: async () => Promise.reject(new Error("db down")) });
     await new Publisher({ bus, store, log: silentLogger() }).screenEvents(session, [tracked]);
     expect(bus.of("sk:screen.events")).toHaveLength(1);
   });

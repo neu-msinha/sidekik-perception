@@ -8,6 +8,7 @@ import { sessionLogger, type DomEvent, type Envelope, type Logger } from "@sidek
 import { CtxBatcher } from "./ctx.js";
 import { analyzeFrame, decide, type FrameAnalysis } from "./diff.js";
 import type { FrameSink, IncomingFrame } from "./frames/routes.js";
+import { Keyframer, type KeyframeDeps } from "./keyframes.js";
 import type { Publisher } from "./publisher.js";
 import type { Session } from "./sessions.js";
 import { ScreenTracker, type TrackedEvent } from "./state.js";
@@ -24,6 +25,8 @@ export type PipelineDeps = {
   now?: () => number;
   /** ctx throttle (DESIGN: 5 s); tests shorten it. */
   ctxEveryMs?: number;
+  /** Keyframes and the raw-frame ring buffer; without it no frame is kept at all. */
+  keyframes?: KeyframeDeps;
 };
 
 /** Called with every batch of events a session publishes (keyframes hook in here). */
@@ -31,6 +34,7 @@ export type EventsListener = (session: Session, published: Awaited<ReturnType<Pu
 
 export class SessionPipeline {
   readonly tracker: ScreenTracker;
+  readonly keyframer: Keyframer | undefined;
   private readonly ctx: CtxBatcher;
   private readonly log: Logger;
   private readonly now: () => number;
@@ -59,6 +63,7 @@ export class SessionPipeline {
   ) {
     this.now = deps.now ?? Date.now;
     this.tracker = new ScreenTracker(session.language);
+    this.keyframer = deps.keyframes ? new Keyframer(session, deps.keyframes) : undefined;
     this.log = sessionLogger(deps.log, session);
     this.ctx = new CtxBatcher((text, t) => deps.publisher.ctx(session, text, t).catch((err: unknown) => this.log.error({ err }, "ctx publish failed")), this.now, deps.ctxEveryMs);
   }
@@ -72,6 +77,7 @@ export class SessionPipeline {
     if (this.session.offRecord) return;
     this.stats.frames++;
     this.seeT(frame.t_ms);
+    this.keyframer?.onFrame(frame);
     if (this.latest) this.stats.dropped_busy++;
     this.latest = frame;
     void this.pump();
@@ -89,11 +95,17 @@ export class SessionPipeline {
     await this.emit(this.tracker.tick(this.nowT()));
   }
 
-  /** Off-record: forget the waiting frame and everything in flight, stop ctx. */
+  /** Brain asked a question: keyframes around it. */
+  onAsk(t_ms: number): void {
+    if (!this.session.offRecord) this.keyframer?.onAsk(t_ms);
+  }
+
+  /** Off-record: forget the waiting frame, the ring buffer and everything in flight; stop ctx. */
   pause(): void {
     this.epoch++;
     this.latest = undefined;
     this.ctx.clear();
+    this.keyframer?.clear();
   }
 
   /** Session ended: commit what's settled-enough, send the last ctx, stop. */
@@ -103,10 +115,12 @@ export class SessionPipeline {
       await this.emit(this.tracker.tick(this.nowT() + 60_000));
       await this.ctx.flush();
     }
+    await this.keyframer?.idle();
     this.epoch++;
     this.latest = undefined;
     this.ctx.clear();
-    this.log.info({ ...this.stats }, "pipeline closed");
+    this.keyframer?.clear();
+    this.log.info({ ...this.stats, keyframes: this.keyframer?.stats }, "pipeline closed");
   }
 
   /** Waits until no frame is waiting, analyzing or in flight (tests and shutdown). */
@@ -115,6 +129,7 @@ export class SessionPipeline {
       await new Promise((r) => setTimeout(r, 5));
     }
     await this.applyChain;
+    await this.keyframer?.idle();
   }
 
   private seeT(t: number): void {
@@ -139,6 +154,7 @@ export class SessionPipeline {
         return;
       }
       this.stats[d.kind]++;
+      if (d.kind === "full" && d.why === "dist") this.keyframer?.onNewScreen(frame);
       const previousBaseline = this.baseline;
       this.baseline = analysis;
       if (d.kind === "full") this.lastFullT = frame.t_ms;
@@ -182,6 +198,7 @@ export class SessionPipeline {
     this.stats.events += events.length;
     const published = await this.deps.publisher.screenEvents(this.session, events);
     this.ctx.add(events);
+    this.keyframer?.onEvents(published, frame);
     this.onEvents?.(this.session, published, frame);
   }
 }
@@ -221,6 +238,10 @@ export class PipelineManager implements FrameSink {
 
   async onDom(session: Session, ev: Envelope<DomEvent>): Promise<void> {
     await this.get(session).onDom(ev);
+  }
+
+  onAsk(session: Session, t_ms: number): void {
+    this.pipelines.get(session.session_id)?.onAsk(t_ms);
   }
 
   onOffRecord(session: Session, on: boolean): void {

@@ -8,7 +8,7 @@ import { MemoryStore } from "../src/store.js";
 import { EMPTY_VISION_STATE, type VisionOutput, type VisionRecord } from "../src/vision/schema.js";
 import { VisionError, type Vision, type VisionRequest, type VisionResult } from "../src/vision/vision.js";
 import { invoiceSvg, jpeg, listSvg } from "./fixtures/screens.js";
-import { ev, FakeBus, ORG, SID, silentLogger, started } from "./helpers.js";
+import { ev, FakeBus, lifecycle, ORG, SID, silentLogger, started } from "./helpers.js";
 
 const R: VisionRecord = { invoice_id: "4471", supplier: "Präzisionswerk Ulm", net_amount: "6.350,00 €", currency: null, invoice_date: null, company_code: "DE01", category: "equipment", cost_center: "4711", asset_number: null };
 const out = (record: Partial<VisionRecord>, focus: string | null = null): VisionOutput => ({
@@ -53,11 +53,13 @@ function setup(vision: Vision) {
   const store = new MemoryStore();
   const sessions = new SessionRegistry();
   const log = silentLogger();
-  const pipelines = new PipelineManager({ vision, publisher: new Publisher({ bus, store, log }), log, ctxEveryMs: 300 });
+  const redactor = { redact: async (image: Buffer) => ({ image, presidio: true }) };
+  const pipelines = new PipelineManager({ vision, publisher: new Publisher({ bus, store, log }), log, ctxEveryMs: 300, keyframes: { store, redactor, log } });
   wireConsumers(bus, sessions, log, {
     onDom: (s, e) => pipelines.onDom(s, e),
     onOffRecord: async (s, on) => pipelines.onOffRecord(s, on),
     onEnded: (s) => pipelines.onEnded(s),
+    onAsk: async (s, e) => pipelines.onAsk(s, e.t_ms),
   });
   const frame = (t_ms: number, jpegBytes: Buffer, reason: IncomingFrame["reason"] = "tick"): IncomingFrame => ({ t_ms, reason, jpeg: jpegBytes, source: "browser", received_ms: Date.now() });
   const send = async (f: IncomingFrame) => {
@@ -141,5 +143,65 @@ describe("pipeline: frames", () => {
     expect(changed(bus).map((e) => e.data.after)).toEqual(["0400"]);
     // The failed call's tokens are still reported.
     expect(bus.of("sk:usage").length).toBe(6);
+  });
+});
+
+describe("pipeline: off the record (ticket 9)", () => {
+  it("processes no frame, keeps no frame and publishes nothing while off the record", async () => {
+    const vision = new ScriptVision([out({}), out({ cost_center: "0400" })]);
+    const { bus, store, frame, send, pipelines, sessions } = setup(vision);
+    await bus.deliver("sk:session.lifecycle", started());
+    await send(frame(1000, screens.cc4711!, "nav"));
+    const p = pipelines.peek(SID)!;
+    expect(p.keyframer!.ring.size).toBe(1);
+    const before = { calls: vision.requests.length, events: bus.of("sk:screen.events").length, keyframes: store.keyframes.length };
+
+    await bus.deliver("sk:session.lifecycle", lifecycle("offrecord_on", 2000));
+    expect(p.keyframer!.ring.size).toBe(0);
+    pipelines.onFrame(sessions.get(SID)!, frame(3000, screens.list!, "nav"));
+    pipelines.onFrame(sessions.get(SID)!, frame(4000, screens.cc0400!));
+    await bus.deliver("sk:dom.events", ev("sk:dom.events", 4500, { kind: "field_change", field: "cost_center", before: "4711", after: "0400" }));
+    await bus.deliver("sk:agent.commands", ev("sk:agent.commands", 4600, { type: "ask", question_id: "q", text: "Warum?", qtype: "why" }, SID, "brain"));
+    await p.idle();
+    expect(vision.requests.length).toBe(before.calls);
+    expect(p.stats.frames).toBe(1);
+    expect(p.keyframer!.ring.size).toBe(0);
+    expect(bus.of("sk:screen.events")).toHaveLength(before.events);
+    expect(store.keyframes).toHaveLength(before.keyframes);
+
+    await bus.deliver("sk:session.lifecycle", lifecycle("offrecord_off", 5000));
+    await send(frame(6000, screens.cc0400!));
+    expect(vision.requests.length).toBe(before.calls + 1);
+    expect(changed(bus).map((e) => e.data.after)).toEqual(["0400"]);
+  });
+
+  it("throws away a vision result that comes back after off-record started", async () => {
+    const vision = new ScriptVision([out({ cost_center: "0400" })], 100);
+    const { bus, store, frame, pipelines, sessions } = setup(vision);
+    await bus.deliver("sk:session.lifecycle", started());
+    // A tick frame: no keyframe of its own, so only the vision result could produce output.
+    pipelines.onFrame(sessions.get(SID)!, frame(1000, screens.cc0400!));
+    await new Promise((r) => setTimeout(r, 50));
+    await bus.deliver("sk:session.lifecycle", lifecycle("offrecord_on", 1100));
+    await pipelines.peek(SID)!.idle();
+    expect(vision.requests).toHaveLength(1);
+    expect(bus.of("sk:screen.events")).toHaveLength(0);
+    expect(store.keyframes).toHaveLength(0);
+    // The call was still billed.
+    expect(bus.of("sk:usage")).toHaveLength(2);
+  });
+
+  it("keeps keyframes around an ask and frees everything at the end", async () => {
+    const vision = new ScriptVision([], 0);
+    const { bus, store, frame, send, pipelines } = setup(vision);
+    await bus.deliver("sk:session.lifecycle", started());
+    await send(frame(1000, screens.cc4711!, "nav"));
+    await send(frame(2000, screens.cc4711b!));
+    await bus.deliver("sk:agent.commands", ev("sk:agent.commands", 2500, { type: "ask", question_id: "q", text: "Warum?", qtype: "why" }, SID, "brain"));
+    await send(frame(3500, screens.cc4711!));
+    await pipelines.peek(SID)!.idle();
+    expect(store.keyframes.map((k) => k.t_ms).sort((a, b) => a - b)).toEqual([1000, 2000, 3500]);
+    await bus.deliver("sk:session.lifecycle", lifecycle("ended", 4000));
+    expect(pipelines.peek(SID)).toBeUndefined();
   });
 });

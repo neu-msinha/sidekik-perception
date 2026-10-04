@@ -16,7 +16,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "bench": "tsx --env-file-if-exists=.env bench/run.ts",
-    "bench:screens": "tsx bench/gen-screens.ts"
+    "bench:screens": "tsx bench/gen-screens.ts",
+    "test:live": "TEST_PRESIDIO_IMAGE_URL=${TEST_PRESIDIO_IMAGE_URL:-http://localhost:5003} vitest run test/live.test.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.131.0",

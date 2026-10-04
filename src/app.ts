@@ -8,6 +8,7 @@ import type { PerceptionEnv } from "./env.js";
 import type { FrameSink } from "./frames/routes.js";
 import { PipelineManager, type EventsListener } from "./pipeline.js";
 import { Publisher } from "./publisher.js";
+import { PresidioImageRedactor } from "./redact-image.js";
 import { MemoryStore, SupabaseStore, type PerceptionStore } from "./store.js";
 import { FakeVision } from "./vision/fake.js";
 import { AnthropicVisionModel, ClaudeVision, type Vision } from "./vision/vision.js";
@@ -80,10 +81,15 @@ export async function startPerception(env: PerceptionEnv, opts: StartOptions = {
       ? { presidio: { analyzerUrl: env.PRESIDIO_ANALYZER_URL, anonymizerUrl: env.PRESIDIO_ANONYMIZER_URL } }
       : {}),
   });
-  const pipelines = new PipelineManager({ vision: opts.vision ?? createVision(env), publisher, log }, opts.onEvents);
+  const redactor = new PresidioImageRedactor(env.PRESIDIO_IMAGE_URL ? { url: env.PRESIDIO_IMAGE_URL } : {});
+  const pipelines = new PipelineManager(
+    { vision: opts.vision ?? createVision(env), publisher, log, keyframes: { store, redactor, log } },
+    opts.onEvents,
+  );
   const hooks: PerceptionHooks = opts.hooks ?? {
     onDom: (session, ev) => pipelines.onDom(session, ev),
     onOffRecord: async (session, on) => pipelines.onOffRecord(session, on),
+    onAsk: async (session, ev) => pipelines.onAsk(session, ev.t_ms),
     onEnded: (session) => pipelines.onEnded(session),
   };
   const stopConsumers = wireConsumers(bus, sessions, log, hooks);
@@ -97,6 +103,7 @@ export async function startPerception(env: PerceptionEnv, opts: StartOptions = {
     logger: log,
     checks: { redis: async () => (await health.ping()) === "PONG" },
     frames: { sessions, directory, sink, sessionSecret: env.SK_SESSION_SECRET, internalToken: env.SK_INTERNAL_TOKEN, log },
+    internal: { token: env.SK_INTERNAL_TOKEN, store },
   });
 
   if (opts.listen ?? true) {
