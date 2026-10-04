@@ -26,6 +26,7 @@ beforeAll(async () => {
     SK_INTERNAL_TOKEN: INTERNAL,
     SK_SESSION_SECRET: SECRET,
     PERSISTENCE: "memory",
+    FAKE_VISION: "true",
   });
   perception = await startPerception(env, { listen: false, logger: silentLogger() });
 });

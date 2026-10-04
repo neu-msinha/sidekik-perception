@@ -21,7 +21,7 @@ pnpm dev:mock path/to/x.jsonl --speed 1
 pnpm dev:mock --keep                   # keep serving after the replay
 ```
 
-Fixture lines are `{"stream": "sk:…", "ev": <Envelope>}`, and each replay gets fresh session and event ids.
+It prints the `screen.events` and `ctx` lines perception publishes for the fixture's DOM events. Without `ANTHROPIC_API_KEY`, vision runs on an offline fake. Fixture lines are `{"stream": "sk:…", "ev": <Envelope>}`, and each replay gets fresh session and event ids.
 
 ## Frames
 
@@ -54,6 +54,9 @@ pnpm test        # app.test.ts needs Redis (DB 13; override with TEST_REDIS_URL)
 | `src/vision/` | Claude vision: verbatim DESIGN prompt, structured-output schema, crop/scale, retry and escalation policy, offline fake |
 | `src/normalize.ts` | German/English amounts, dates and currencies → `InvoiceState`; canonical field values |
 | `src/state.ts` | `ScreenTracker`: merges vision and DOM into `ScreenState`, emits one event per real change, DOM wins for 10 s, typing detection |
+| `src/pipeline.ts` | Per-session pipeline: frame → diff → vision (≤ 2 in flight, latest frame waits) → state → publish; settle timer |
+| `src/publisher.ts`, `src/store.ts` | `screen_events` rows + `sk:screen.events`, `ctx` commands, `usage`; screen text redacted with Presidio (fails closed) |
+| `src/ctx.ts` | `ctx` lines: at most one per 5 s, ≤ 400 chars, invoice values only |
 | `src/usage.ts` | `usage` records priced from `PRICE_TABLE` |
 | `bench/` | Vision benchmark: exact digits and p50/p95 latency per model (`pnpm bench`, see `bench/README.md`) |
 | `src/directory.ts` | Session → org lookup (registry, then the `sessions` table) |

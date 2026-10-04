@@ -1,15 +1,19 @@
 /**
- * Runs perception against a recorded bus fixture, with no teammates' services.
+ * Runs perception against a recorded bus fixture, with no teammates' services and no database.
  *
  *   pnpm dev:mock                                  # sidekik-platform capture fixture, 20x speed
  *   pnpm dev:mock path/to/fixture.jsonl --speed 1  # real time
  *   pnpm dev:mock --keep                           # keep serving after the replay
+ *
+ * The fixture's DOM events go through the real state tracker, so it prints the screen.events and ctx
+ * lines perception would publish. Without ANTHROPIC_API_KEY, vision runs on the offline fake.
  *
  * Needs Redis: docker compose -f ../sidekik-platform/dev/docker-compose.yml up -d redis
  */
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
+import { Redis } from "ioredis";
 import { startPerception } from "../src/app.js";
 import { loadPerceptionEnv } from "../src/env.js";
 import { readFixture, replayFixture } from "./replay.js";
@@ -40,21 +44,31 @@ if (!existsSync(fixturePath)) {
   process.exit(1);
 }
 
-const env = loadPerceptionEnv({ ...DEV_DEFAULTS, ...stripEmpty(process.env) });
+const real = stripEmpty(process.env);
+const env = loadPerceptionEnv({ ...DEV_DEFAULTS, ...real, ...(real.ANTHROPIC_API_KEY ? {} : { FAKE_VISION: "true" }) });
 const perception = await startPerception(env);
 const { log } = perception;
 
-const lines = readFixture(fixturePath);
-log.info({ fixture: fixturePath, events: lines.length, speed: Number(values.speed) }, "dev:mock replaying");
+// The fixture also carries the screen.events and ctx the recording's perception published: count only ours.
+const lines = readFixture(fixturePath).filter((l) => l.ev.producer !== "perception");
+log.info({ fixture: fixturePath, events: lines.length, speed: Number(values.speed), fake_vision: env.FAKE_VISION }, "dev:mock replaying");
 // Let consumer groups get created before the first publish.
 await new Promise((r) => setTimeout(r, 300));
 const sessions = await replayFixture(perception.bus, lines, { speed: Number(values.speed) });
-await new Promise((r) => setTimeout(r, 500));
+await new Promise((r) => setTimeout(r, 1000));
 
-for (const sid of sessions.values()) {
-  const s = perception.sessions.get(sid);
-  log.info(s ? { ...s } : { session_id: sid }, s ? "dev:mock session state" : "dev:mock session ended");
+const redis = new Redis(env.REDIS_URL);
+const ids = new Set(sessions.values());
+const read = async (stream: string) =>
+  (await redis.xrange(stream, "-", "+"))
+    .map(([, f]) => JSON.parse(f[f.indexOf("ev") + 1] ?? "null") as { session_id: string; t_ms: number; producer: string; data: Record<string, unknown> })
+    .filter((e) => e && ids.has(e.session_id) && e.producer === "perception");
+for (const e of await read("sk:screen.events")) {
+  const d = e.data;
+  console.log(`screen.event ${String(e.t_ms).padStart(7)}  ${String(d.type).padEnd(16)} ${d.field ?? ""} ${d.before ?? ""}${d.after !== undefined ? `→${d.after}` : ""} (${d.source})`);
 }
+for (const e of await read("sk:agent.commands")) console.log(`ctx          ${String(e.t_ms).padStart(7)}  ${e.data.text}`);
+redis.disconnect();
 
 if (values.keep) {
   log.info(`dev:mock done; still serving on :${env.PORT} (Ctrl+C to stop)`);

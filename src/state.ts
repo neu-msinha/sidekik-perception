@@ -225,7 +225,7 @@ export class ScreenTracker {
       case "save_attempt": {
         this.commitAll(events);
         const entity = ev.record ?? this.entity();
-        emit({ type: "button_clicked", t_ms: t, ...(entity ? { entity } : {}), field: "save", after: "save" });
+        emit({ type: "button_clicked", t_ms: t, ...(entity ? { entity } : {}), field: "save" });
         break;
       }
     }

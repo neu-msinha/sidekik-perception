@@ -21,6 +21,9 @@ export const PerceptionEnvSchema = BaseServiceEnvSchema.extend({
   /** Escalation model for low-confidence numeric fields (DESIGN §4). Unset: retry the primary once. */
   VISION_FALLBACK: optional,
   VISION_TIMEOUT_MS: z.coerce.number().int().positive().default(2000),
+  /** Presidio text redaction for untrusted_screen_text. Unset: screen text is dropped, never published raw. */
+  PRESIDIO_ANALYZER_URL: optional.pipe(z.url().optional()),
+  PRESIDIO_ANONYMIZER_URL: optional.pipe(z.url().optional()),
   /** Presidio image redactor. Unset: keyframes fall back to blurring PII-labeled fields. */
   PRESIDIO_IMAGE_URL: optional.pipe(z.url().optional()),
   /** Where perception's rows and files go: Supabase, or memory + log (dev:mock without a database). */
