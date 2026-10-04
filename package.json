@@ -14,7 +14,9 @@
     "start": "node dist/src/main.js",
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "bench": "tsx --env-file-if-exists=.env bench/run.ts",
+    "bench:screens": "tsx bench/gen-screens.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.131.0",
