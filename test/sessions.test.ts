@@ -45,3 +45,14 @@ describe("SessionRegistry", () => {
     expect(r.get(SID)?.language).toBe("de");
   });
 });
+
+describe("SessionRegistry after ended", () => {
+  it("never brings an ended session back", () => {
+    const r = new SessionRegistry();
+    r.applyLifecycle(started());
+    r.applyLifecycle(lifecycle("ended"));
+    expect(r.ensure({ session_id: SID, org_id: ORG })).toBeUndefined();
+    expect(r.applyLifecycle(lifecycle("offrecord_on")).kind).toBe("unknown_session");
+    expect(r.size).toBe(0);
+  });
+});

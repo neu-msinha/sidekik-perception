@@ -26,6 +26,8 @@ export type LifecycleOutcome =
 export class SessionRegistry {
   private readonly sessions = new Map<string, Session>();
   private readonly replaySessions = new Set<string>();
+  /** Ended sessions stay ended: a late frame or DOM event must not bring one back. */
+  private readonly endedSessions = new Set<string>();
 
   get(sessionId: string): Session | undefined {
     return this.sessions.get(sessionId);
@@ -40,12 +42,12 @@ export class SessionRegistry {
   }
 
   isIgnored(sessionId: string): boolean {
-    return this.replaySessions.has(sessionId);
+    return this.replaySessions.has(sessionId) || this.endedSessions.has(sessionId);
   }
 
   /**
    * Session for a frame or DOM event that arrived before its lifecycle `started` (or after a restart).
-   * Returns undefined for replay sessions.
+   * Returns undefined for replay and ended sessions.
    */
   ensure(init: { session_id: string; org_id: string; kind?: SessionKind }): Session | undefined {
     if (this.isIgnored(init.session_id)) return undefined;
@@ -67,7 +69,8 @@ export class SessionRegistry {
 
   applyLifecycle(ev: Envelope<SessionLifecycle>): LifecycleOutcome {
     const d = ev.data;
-    if (this.isIgnored(ev.session_id)) return { kind: "ignored_replay" };
+    if (this.replaySessions.has(ev.session_id)) return { kind: "ignored_replay" };
+    if (this.endedSessions.has(ev.session_id)) return { kind: "unknown_session" };
     if (d.mode === "replay") {
       this.replaySessions.add(ev.session_id);
       this.sessions.delete(ev.session_id);
@@ -76,6 +79,7 @@ export class SessionRegistry {
 
     let s = this.sessions.get(ev.session_id);
     if (d.event === "ended") {
+      this.endedSessions.add(ev.session_id);
       if (!s) return { kind: "unknown_session" };
       this.sessions.delete(ev.session_id);
       return { kind: "ended", session: s };

@@ -3,7 +3,9 @@ import { createBus, createLogger, type Bus, type Logger } from "@sidekik/contrac
 import type { FastifyInstance } from "fastify";
 import { Redis } from "ioredis";
 import { wireConsumers, type PerceptionHooks } from "./consumers.js";
+import { RegistryFirstDirectory } from "./directory.js";
 import type { PerceptionEnv } from "./env.js";
+import type { FrameSink } from "./frames/routes.js";
 import { buildServer } from "./server.js";
 import { SessionRegistry } from "./sessions.js";
 
@@ -29,7 +31,7 @@ export type Perception = {
   close(): Promise<void>;
 };
 
-export type StartOptions = { listen?: boolean; logger?: Logger; bus?: Bus; hooks?: PerceptionHooks };
+export type StartOptions = { listen?: boolean; logger?: Logger; bus?: Bus; hooks?: PerceptionHooks; sink?: FrameSink };
 
 export async function startPerception(env: PerceptionEnv, opts: StartOptions = {}): Promise<Perception> {
   const log = opts.logger ?? createLogger("perception", { level: env.LOG_LEVEL });
@@ -39,10 +41,17 @@ export async function startPerception(env: PerceptionEnv, opts: StartOptions = {
   await health.connect();
 
   const stopConsumers = wireConsumers(bus, sessions, log, opts.hooks);
+  const directory = new RegistryFirstDirectory(
+    sessions,
+    env.PERSISTENCE === "supabase" ? { url: env.SUPABASE_URL, serviceRoleKey: env.SUPABASE_SERVICE_ROLE_KEY } : undefined,
+  );
+  // Until the pipeline lands, accepted frames are only counted.
+  const sink: FrameSink = opts.sink ?? { onFrame: () => {} };
   const app = buildServer({
     version: VERSION,
     logger: log,
     checks: { redis: async () => (await health.ping()) === "PONG" },
+    frames: { sessions, directory, sink, sessionSecret: env.SK_SESSION_SECRET, internalToken: env.SK_INTERNAL_TOKEN, log },
   });
 
   if (opts.listen ?? true) {

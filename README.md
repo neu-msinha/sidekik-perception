@@ -23,6 +23,16 @@ pnpm dev:mock --keep                   # keep serving after the replay
 
 Fixture lines are `{"stream": "sk:…", "ev": <Envelope>}`, and each replay gets fresh session and event ids.
 
+## Frames
+
+`WS /ws/frames/:sid?t=<sk_token>` (browser) and `WS /internal/frames/:sid` with `X-Internal-Token` (meetbot) take the same binary messages:
+
+```
+[uint32 big-endian: header length N][N bytes UTF-8 JSON {"t_ms": 12345, "reason": "tick"|"blur"|"save"|"nav"}][JPEG bytes]
+```
+
+`t_ms` is session time. The server accepts at most 2 frames per second per session (by arrival, with 50 ms of jitter allowed) and drops the rest. Frames are dropped while the session is off the record, and the socket closes with code `4410` once the session has ended. `src/frames/protocol.ts` has `encodeFrame()` for senders.
+
 ## Test
 
 ```sh
@@ -39,6 +49,8 @@ pnpm test        # app.test.ts needs Redis (DB 13; override with TEST_REDIS_URL)
 | `src/server.ts` | Fastify app and `/healthz` |
 | `src/sessions.ts` | Per-session registry: lifecycle, off-record, replay sessions ignored |
 | `src/consumers.ts` | Bus consumers: lifecycle, DOM events, `ask` commands |
+| `src/frames/` | Frames WebSockets: `/ws/frames/:sid` (browser, `sk_token`) and `/internal/frames/:sid` (meetbot), wire format, 2 fps cap |
+| `src/directory.ts` | Session → org lookup (registry, then the `sessions` table) |
 | `scripts/dev-mock.ts`, `scripts/replay.ts` | Offline fixture replay |
 
 ## Deploy
