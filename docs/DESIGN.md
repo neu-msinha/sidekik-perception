@@ -23,22 +23,24 @@ It **never stores raw frames.** Each session keeps only a 20-second in-memory ri
 
 | Interface | Detail |
 |---|---|
-| `WS /ws/frames/:sid?t=<sk_token>` (public) | Binary messages: 4-byte header length + JSON header `{t_ms, reason: "tick"\|"blur"\|"save"\|"nav"}` + JPEG bytes (1280 px wide, quality 0.7). Max 2 fps; anything faster is dropped. |
-| `WS /internal/frames/:sid` (internal) | Same format, sent by meetbot after it decodes H.264. |
-| `POST /internal/clips` (internal) | `{session_id, items:[{step_id, t_ms, before_s:6, after_s:4}]}` → `202 {job_id}`. When done it writes `clips` rows and publishes `usage`. |
+| `WS /ws/frames/:sid?t=<sk_token>` (public) | Binary messages: header length as a **big-endian uint32** + JSON header `{t_ms, reason: "tick"\|"blur"\|"save"\|"nav"}` (`FrameHeaderSchema`) + JPEG bytes (1280 px wide, quality 0.7). The token is checked before the upgrade and its `sid` must match the path (`401` otherwise). Max 2 fps per session, measured on arrival with 50 ms of jitter allowed; anything faster is dropped, so senders keep ≥ 500 ms between frames. Closes with `4410` once the session has ended. |
+| `WS /internal/frames/:sid` (internal) | Same format, sent by meetbot after it decodes H.264. `X-Internal-Token`; the org comes from lifecycle or the `sessions` table. |
+| `POST /internal/clips` (internal) | `{session_id, items:[{step_id, t_ms, before_s:6, after_s:4}]}` → `202 {job_id}`. When done it has written one `clips` row and MP4 per item. No `usage` record: ffmpeg runs locally. |
+| `GET /internal/clips/:job_id` (internal) | Job status `queued\|running\|done\|failed`, per item `{step_id, status, clip_id?, storage_path?, duration_s?, error?}`. |
 | `GET /internal/keyframe-url?keyframe_id=` | Returns a signed URL (5 min). |
 | Consumes `sk:dom.events` | Each DOM event becomes a `ScreenEvent` with `source: "dom"` (deterministic and trusted for field values). |
 | Consumes `sk:session.lifecycle` | `offrecord_on` → stop processing and clear the ring buffer. `offrecord_off` → resume. `ended` → flush and free memory. |
+| Consumes `sk:agent.commands` (`ask` only) | Keyframes from 5 s before to 5 s after each question. |
 
 **Outbound**
 
 | Interface | Detail |
 |---|---|
-| `sk:screen.events` | One `ScreenEvent` per real change. |
-| `sk:agent.commands` | `ctx`, batched: at most one every 5 s, at most 400 characters (format in §4). |
+| `sk:screen.events` | One `ScreenEvent` per real change. `event_id` is the envelope id (= `screen_events.event_id`). Keyframes are stored after the event is published, so the bus event carries no `keyframe_id`; read it from the `screen_events` row. `untrusted_screen_text` is redacted with Presidio (keeping the supplier) and dropped when Presidio is unavailable. |
+| `sk:agent.commands` | `ctx`, batched: at most one every 5 s, at most 400 characters (format in §4). Invoice record values only; other fields are named without their values ("approver changed"), since the line goes to ElevenLabs. |
 | `sk:usage` | Vision tokens and cost. |
 | Tables | `screen_events`, `keyframes`, `clips` |
-| Storage | `captures/org/{org}/sessions/{sid}/keyframes/*.webp`, `.../clips/*.mp4` |
+| Storage | `captures/org/{org}/sessions/{sid}/keyframes/{t_ms}.webp`, `.../clips/{step_id}.mp4`. `storage_path` columns include the bucket (`captures/org/...`). |
 
 ## 3. Pipeline (per session)
 
@@ -52,9 +54,11 @@ vision → zod-validate → normalize (amounts "6.350,00"→6350, dates→ISO, m
    → keyframe? (field/record/button change, first frame after nav, ±5 s around an `ask`) → Presidio image-redactor → webp → Storage
 ```
 
-- **Concurrency:** at most 2 vision calls in flight per session. While a call is running, keep only the latest frame waiting and discard the rest.
+- **Change detection:** a 64-bit pHash of the whole frame can't see small edits (re-typing a 4-digit cost center in a 1280×720 frame flips no bits), so each of the 16×16 tiles is also compared cell by cell on a 4× grayscale downsample. A tile has changed when ≥ 2 of its 4×4 px cells moved ≥ 28 gray levels. No changed tile and dist ≤ 4 → drop; dist > 12, a changed area over 50% of the frame, or 15 s since the last full frame → full; otherwise crop the changed tiles. Frames are compared with the last frame sent to vision, so slow changes add up.
+- **Concurrency:** at most 2 vision calls in flight per session. While a call is running, keep only the latest frame waiting and discard the rest. Results are applied in the order frames were sent; a failed call puts the comparison baseline back to the last frame vision saw.
 - **DOM wins:** when the MiniERP sends a `dom` value for a field, that value overrides the vision value for that field for 10 s.
-- **Typing:** emit `typing_in_progress` if a field value grew within the last 2 s. Brain uses this to stay quiet.
+- **Typing:** emit `typing_in_progress` if a field value grew within the last 2 s. Brain uses this to stay quiet. A vision change to the focused field is held until it settles (1 s without growth, focus moving, a blur/save/nav frame, or the DOM change), so typing produces one `field_changed`.
+- **Keyframes:** for `field_changed`, `record_opened`, `button_clicked` and `navigation` events, the first frame after navigation, and one frame per second within ±5 s of an `ask`. Redacted by Presidio's image redactor, plus a blur over fields known to hold personal data (approver, contact, email, phone, IBAN, or `<PERSON_1>`-style placeholders). Without Presidio the blur alone is applied and the row has `redacted = false`. Tutor sessions keep keyframes only when `orgs.settings.store_learner_keyframes` is true.
 
 ## 4. Vision
 
@@ -97,13 +101,17 @@ If nothing changed return {"events":[],"state":PREVIOUS_STATE}.
 ## 5. Clips job
 
 1. Pull the redacted keyframes in the time window from Storage.
-2. Run `ffmpeg -framerate 2 -pattern_type glob -i '*.webp' -c:v libx264 -pix_fmt yuv420p -t 10 out.mp4`.
+2. Build a time-aligned slideshow at 2 fps: each half second shows the latest keyframe at or before that moment (keyframes are sparse, taken on changes). Frames are resized to one size and written as numbered PNGs, then `ffmpeg -framerate 2 -i frame_%04d.png -c:v libx264 -pix_fmt yuv420p -t 10 -movflags +faststart out.mp4`. (x264 needs a constant, even frame size; a JPEG intermediate leaves full-range `yuvj420p`.)
 3. Upload the MP4 and insert a `clips` row.
-4. If fewer than 3 keyframes fall in the window, build a slideshow from the nearest ones.
+4. If fewer than 3 keyframes fall in the window, the 3 nearest keyframes in the session share the clip equally.
+
+Jobs run one at a time.
 
 ## 6. Env
 
-`PORT, REDIS_URL, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, SK_SESSION_SECRET, SK_INTERNAL_TOKEN, ANTHROPIC_API_KEY, VISION_PRIMARY, VISION_FALLBACK (optional), VISION_TIMEOUT_MS, PRESIDIO_IMAGE_URL`
+`PORT, REDIS_URL, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, SK_SESSION_SECRET, SK_INTERNAL_TOKEN, LOG_LEVEL, ANTHROPIC_API_KEY, VISION_PRIMARY, VISION_FALLBACK (optional), VISION_TIMEOUT_MS, PRESIDIO_ANALYZER_URL, PRESIDIO_ANONYMIZER_URL, PRESIDIO_IMAGE_URL, FFMPEG_PATH (optional)`
+
+Dev only: `PERSISTENCE=memory` (no Supabase writes) and `FAKE_VISION=true` (offline vision stand-in) for `pnpm dev:mock`.
 
 The Docker image must include `ffmpeg` and `sharp` (libvips).
 

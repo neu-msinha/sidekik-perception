@@ -1,4 +1,4 @@
-# Sidekik: System Architecture (v0.3)
+# Sidekik: System Architecture (v0.3.2)
 
 > **Sidekik** is an AI apprentice. It watches an expert work on their screen and asks why at the right moments. It turns that session into a Work Map, then coaches the next hire through the same work on their own screen.
 > Hack-Nation 7th Global AI Hackathon, Challenge 01 (ElevenLabs) · Domain: **sidekik.live** (Cloudflare) · Team: **Sahil, Aadil, Mayukh**
@@ -139,7 +139,7 @@ Nine repos for three people in 24 hours means integration is the main risk, more
 | `sk:speech.signals` | gateway, meetbot | brain, tutor | `SpeechSignal` |
 | `sk:dom.events` | gateway | perception | `DomEvent` |
 | `sk:screen.events` | perception | brain, tutor, mapper, gateway (replay) | `ScreenEvent` |
-| `sk:agent.commands` | perception (`ctx`), brain (`ask`), mapper (`followup`, `teachback`), tutor (`predict`, `intervene`, `replay`, `summary`) | gateway | `AgentCommand` |
+| `sk:agent.commands` | perception (`ctx`), brain (`ask`), mapper (`followup`, `teachback`), tutor (`predict`, `intervene`, `replay`, `summary`) | gateway; perception (reads `ask` to keep keyframes around each question) | `AgentCommand` |
 | `sk:workmap.published` | mapper | voice, tutor | `WorkMapPublished` |
 | `sk:usage` | every service | gateway (cost ledger) | `UsageRecord` |
 
@@ -420,6 +420,7 @@ sequenceDiagram
   - `.env.example` lists every variable; `src/env.ts` validates them with zod at boot.
   - `@sidekik/contracts` is pinned to a git tag: `"@sidekik/contracts": "github:sidekik-live/sidekik-platform#v0.1.0"`.
   - Release tags carry a prebuilt `dist/`, so installing runs no build step. pnpm 10 blocks build scripts in git dependencies, which is why the build is prebuilt. Pin tags only; branches have no `dist/`.
+  - **Use pnpm 10** (`"packageManager": "pnpm@10.34.6"`). pnpm 9 installs the git dependency under a directory name containing `#`, which Vite (and so vitest) can't load. A lockfile written by pnpm 9 also pins the tag object instead of the commit; pnpm 10 resolves the tag to its commit.
   - If the platform repo is private, add a read-only `NPM_GITHUB_TOKEN` to Railway build variables.
 - **Logging:** every log line includes `session_id`, `org_id`, `event_id` (when there is one), and `latency_ms`.
 - **Git:**
